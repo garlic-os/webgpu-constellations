@@ -1,5 +1,5 @@
-const PARTICLE_COUNT = 115;
-const PARTICLE_SIZE = 3;
+const STAR_COUNT = 115;
+const STAR_SIZE = 3;
 const THRESHOLD = 250.0;
 const SPEED_MULTIPLIER = 2.5;
 
@@ -49,22 +49,24 @@ const starShaderModule = device.createShaderModule({
 			@builtin(position) pos: vec4f,
 		};
 
-		@group(0) @binding(0) var<storage> starState: array<f32>;
+		@group(0) @binding(0) var<storage> states: array<vec4f, ${STAR_COUNT}>;
 
 
 		// x, y, z, w
 		@vertex
-		fn vertexMain(input: VertexInput) -> VertexOutput {
-			var output: VertexOutput;
-			output.pos = input.pos;
-			return output;
+		fn vertexMain(in: VertexInput) -> VertexOutput {
+			var out: VertexOutput;
+			out.pos = vec4f(states[in.instance].xy + in.pos, 0, 1);
+			return out;
 		}
 
 
 		// r, g, b, a
 		@fragment
-		fn fragmentMain(input: VertexOutput) -> @location(0) vec4f {
-			return vec4f(${STAR_COLOR.join(",")}, 1);
+		fn fragmentMain(in: VertexOutput) -> @location(0) vec4f {
+			// Circlular alpha mask
+			let alpha = max(1.0 - length(in.pos), 0.0);
+			return vec4f(${STAR_COLOR.join(",")}, alpha);
 		}
 	`
 });
@@ -73,13 +75,13 @@ const starShaderModule = device.createShaderModule({
 const simulationShaderModule = device.createShaderModule({
 	label: "Constellations simulation shader",
 	code: /* wgsl */ `
-		@group(0) @binding(0) var<storage> starStateIn: array<f32>;
-		@group(0) @binding(1) var<storage, read_write> starStateOut: array<f32>;
+		@group(0) @binding(0) var<storage> statesIn: array<vec4f, ${STAR_COUNT}>;
+		@group(0) @binding(1) var<storage, read_write> statesOut: array<vec4f, ${STAR_COUNT}>;
 
 		@compute
 		@workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 		fn computeMain(@builtin(global_invocation_id) star: vec3u) {
-			starStateOut[i] = starStateIn[i];
+			statesOut[star.x] = statesIn[star.x];
 		}
 	`
 });
@@ -87,8 +89,8 @@ const simulationShaderModule = device.createShaderModule({
 
 // A square to instance all of the stars from
 // TODO: Render a circle instead
-const vertexX = PARTICLE_SIZE / canvas.width / 2;
-const vertexY = PARTICLE_SIZE / canvas.height / 2;
+const vertexX = STAR_SIZE / canvas.width / 2;
+const vertexY = STAR_SIZE / canvas.height / 2;
 const vertices = new Float32Array([
 	-vertexX, -vertexY,
 	 vertexX, -vertexY,
@@ -117,23 +119,35 @@ const vertexBufferLayout = {
 	],
 };
 
-// The x and y positions of each star
-const starStateArray = new Float32Array(PARTICLE_COUNT * 2);
+
+function randomPosition() {
+	return Math.random() * 2 - 1;
+}
+
+function randomVelocity() {
+	return 0.03;  // TODO
+}
+
+// The x and y position and velocity of each star
+const starStateArray = new Float32Array(STAR_COUNT * 4);
 const starStateStorage = [
 	device.createBuffer({
-		label: "Star state A",
+		label: "Star positions A",
 		size: starStateArray.byteLength,
 		usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
 	}),
 	device.createBuffer({
-		label: "Star state B",
+		label: "Star positions B",
 		size: starStateArray.byteLength,
 		usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
 	})
 ];
 
-for (let i = 0; i < starStateArray.length; i++) {
-	starStateArray[i] = Math.random() * 2 - 1;
+for (let i = 0; i < starStateArray.length; i += 4) {
+	starStateArray[i  ] = randomPosition();
+	starStateArray[i+1] = randomPosition();
+	starStateArray[i+2] = randomVelocity();
+	starStateArray[i+3] = randomVelocity();
 }
 device.queue.writeBuffer(starStateStorage[0], 0, starStateArray);
 
@@ -142,16 +156,18 @@ const bindGroupLayout = device.createBindGroupLayout({
 	label: "Star bind group layout",
 	entries: [
 		{
+			// Star state input buffer
 			binding: 0,
 			visibility: GPUShaderStage.VERTEX |
 			            GPUShaderStage.FRAGMENT |
 			            GPUShaderStage.COMPUTE,
-			buffer: { type: "read-only-storage" }  // Star state input buffer
+			buffer: { type: "read-only-storage" }
 		},
 		{
+			// Star state output buffer
 			binding: 1,
 			visibility: GPUShaderStage.COMPUTE,
-			buffer: { type: "storage" }  // Star state output buffer
+			buffer: { type: "storage" }
 		}
 	]
 });
@@ -220,8 +236,7 @@ const simulationPipeline = device.createComputePipeline({
 });
 
 
-requestAnimationFrame(function updateGrid() {
-	// if (!document.hasFocus()) return;
+function tick() {
 	const encoder = device.createCommandEncoder();
 
 	{
@@ -230,8 +245,8 @@ requestAnimationFrame(function updateGrid() {
 		pass.setPipeline(simulationPipeline);
 		pass.setBindGroup(0, bindGroups[step % 2]);
 	
-		const workgroupCount = Math.ceil(GRID_SIZE / WORKGROUP_SIZE);
-		pass.dispatchWorkgroups(workgroupCount, workgroupCount);
+		const workgroupCount = Math.ceil(STAR_COUNT / WORKGROUP_SIZE);
+		pass.dispatchWorkgroups(workgroupCount);
 	
 		pass.end();
 	}
@@ -253,11 +268,13 @@ requestAnimationFrame(function updateGrid() {
 		pass.setPipeline(starPipeline);
 		pass.setBindGroup(0, bindGroups[step % 2]);
 		pass.setVertexBuffer(0, vertexBuffer);
-		pass.draw(vertices.length / 2, PARTICLE_COUNT);
+		pass.draw(vertices.length / 2, STAR_COUNT);
 	
 		pass.end();
 	}
 
 	device.queue.submit([encoder.finish()]);
-	requestAnimationFrame(updateGrid);
-});
+	requestAnimationFrame(tick);
+}
+
+requestAnimationFrame(tick);
