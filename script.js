@@ -65,8 +65,9 @@ const starShaderModule = device.createShaderModule({
 		@fragment
 		fn fragmentMain(in: VertexOutput) -> @location(0) vec4f {
 			// Circlular alpha mask
-			let alpha = max(1.0 - length(in.pos), 0.0);
-			return vec4f(${STAR_COLOR.join(",")}, alpha);
+			// let alpha = max(1.0 - length(in.pos), 0.0);
+			// return vec4f(${STAR_COLOR.join(",")}, alpha);
+			return vec4f(${STAR_COLOR.join(",")}, 1);
 		}
 	`
 });
@@ -81,7 +82,36 @@ const simulationShaderModule = device.createShaderModule({
 		@compute
 		@workgroup_size(${WORKGROUP_SIZE}, ${WORKGROUP_SIZE})
 		fn computeMain(@builtin(global_invocation_id) star: vec3u) {
-			statesOut[star.x] = statesIn[star.x];
+			let i = star.x;
+			statesOut[i].x = statesIn[i].x + statesIn[i].z;
+			statesOut[i].y = statesIn[i].y + statesIn[i].w;
+
+			// Bounce off the edges of the screen.
+			// Snap to the edge of the screen, too, so it doesn't disappear in
+			// case the canvas is resized.
+			// Left edge
+			if (statesIn[i].x <= -1) {
+				statesOut[i].z *= -1;
+				statesOut[i].x = -1 + ${STAR_SIZE / canvas.width / 2};
+			}
+
+			// Right edge
+			else if (statesIn[i].x >= 1) {
+				statesOut[i].z *= -1;
+				statesOut[i].x = 1 - ${STAR_SIZE / canvas.width / 2};
+			}
+		
+			// Top edge
+			if (statesIn[i].y >= 1) {
+				statesOut[i].w *= -1;
+				statesOut[i].y = 1 - ${STAR_SIZE / canvas.height / 2};
+			}
+
+			// Bottom edge
+			else if (statesIn[i].y <= -1) {
+				statesOut[i].w *= -1;
+				statesOut[i].y = -1 + ${STAR_SIZE / canvas.height / 2};
+			}
 		}
 	`
 });
@@ -124,8 +154,11 @@ function randomPosition() {
 	return Math.random() * 2 - 1;
 }
 
+// Generate a value with a magnitude between [0.001953125, 0.0625],
+// negative half the time, and with a bias toward 0.
+// https://www.desmos.com/calculator/7uspuyiuu5
 function randomVelocity() {
-	return 0.03;  // TODO
+	return Math.pow(0.2, Math.random() * 4 + 3) * (Math.random() < 0.5 ? -1 : 1);
 }
 
 // The x and y position and velocity of each star
@@ -168,7 +201,7 @@ const bindGroupLayout = device.createBindGroupLayout({
 			binding: 1,
 			visibility: GPUShaderStage.COMPUTE,
 			buffer: { type: "storage" }
-		}
+		},
 	]
 });
 
