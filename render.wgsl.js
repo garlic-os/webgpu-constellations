@@ -1,27 +1,33 @@
-import {
-	FRAME_WIDTH_PIX,
-	FRAME_HEIGHT_PIX,
-	STAR_COLOR,
-	STAR_COUNT,
-	STAR_WIDTH_CLIP,
-	STAR_HEIGHT_CLIP,
-	ASPECT_RATIO_CORRECTION,
-} from "./constants.js";
+import { wgslUniforms } from "./uniforms.wgsl.js";
 
 
 export default /* wgsl */`
+	${wgslUniforms}
+
 	struct VertexInput {
 		@builtin(instance_index) i_instance: u32,
-		@builtin(vertex_index) i_vertex: u32,
+		@location(0) vertex_pos: vec2f,
 	};
 
 	struct VertexOutput {
-		@builtin(position) pos: vec4f,
+		@builtin(position) pixel_pos: vec4f,
 		@location(0) quad_pos: vec2f,
 	};
 
-	@group(0) @binding(0) var<storage> states: array<vec4f, ${STAR_COUNT}>;
-	@group(0) @binding(2) var<storage> not_vertices: array<vec4f, 6>;
+	@group(0) @binding(0) var<uniform> u: Uniforms;
+	@group(0) @binding(1) var<storage> states: array<vec4f>;
+
+
+	fn clip_space(pos: vec2f) -> vec2f {
+		return vec2f(
+			  (2 * pos.x / u.res.x ) - 1,
+			-((2 * pos.y / u.res.y) - 1)
+		);
+	}
+
+	fn aspect_ratio() -> f32 {
+		return f32(u.res.x) / f32(u.res.y);
+	}
 
 
 	// x, y, z, w
@@ -29,9 +35,7 @@ export default /* wgsl */`
 	fn vertex_main(in: VertexInput) -> VertexOutput {
 		var out: VertexOutput;
 		out.quad_pos = states[in.i_instance].xy;
-		var pos = out.quad_pos + not_vertices[in.i_vertex].xy;
-		// pos.y *= ${ASPECT_RATIO_CORRECTION};
-		out.pos = vec4f(pos, 0, 1);
+		out.pixel_pos = vec4f(out.quad_pos - in.vertex_pos, 0, 1);
 		return out;
 	}
 
@@ -39,19 +43,19 @@ export default /* wgsl */`
 	// r, g, b, a
 	@fragment
 	fn fragment_main(in: VertexOutput) -> @location(0) vec4f {
-		// return vec4f(1, 1, 1, 1);  // DEBUG
+		return vec4f(1, 1, 1, 1);  // DEBUG
+		let pixel_pos = clip_space(in.pixel_pos.xy);
+		var alpha = distance(in.quad_pos, pixel_pos);
+		let alpha_x = 1 - alpha / (u.star_radius / aspect_ratio());
+		let alpha_y = 1 - alpha / u.star_radius;
 
-		// Convert from pixel space to clip space
-		var pixel_pos = vec2f(
-			(in.pos.x / ${FRAME_WIDTH_PIX / 2}) - 1,
-			((in.pos.y / ${FRAME_HEIGHT_PIX / 2}) - 1) * -1  // TODO: why * -1
+		alpha = (
+			(alpha_x * cos(in.quad_pos.x) / ${Math.PI}) +
+			(aspect_ratio() * alpha_y)
 		);
 
-		// pixel_pos.x -= 0.5;
-		// pixel_pos.x *= ${1/1.01};
-		// pixel_pos.x += 0.5;
-
-		let alpha = 1 - (distance(in.quad_pos, pixel_pos)) / ${STAR_WIDTH_CLIP};
-		return vec4f(${STAR_COLOR.join(",")}, alpha * 2);
+		var color = u.star_color;
+		color.a = alpha;
+		return color;
 	}
 `;

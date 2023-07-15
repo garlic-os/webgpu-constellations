@@ -1,44 +1,43 @@
 import {
-	BACKGROUND_COLOR,
-	STAR_COUNT,
-	STAR_WIDTH_CLIP,
-	STAR_HEIGHT_CLIP,
 	WORKGROUP_SIZE
 } from "./constants.js";
 import wgslRenderCode from "./render.wgsl.js";
 import wgslComputeCode from "./compute.wgsl.js";
 import { canvasFormat, context, device } from "./canvas.js";
+import { uniforms, uniformBuffer } from "./uniforms.wgsl.js";
+
+const BACKGROUND_COLOR = [0.0627, 0.0706, 0.0706];
 
 
-// TODO: Have nothing in here and render from the compute buffers instead?
+function aspect_ratio() {
+	return uniforms.res[0] / uniforms.res[1];
+}
+
+const star_width = uniforms.star_radius / aspect_ratio();
+const star_height = uniforms.star_radius;
+console.debug("Star width:", star_width, "Star height:", star_height);
+
 const vertices = new Float32Array([
-	-STAR_WIDTH_CLIP, -STAR_HEIGHT_CLIP, 0, 0,
-	 STAR_WIDTH_CLIP, -STAR_HEIGHT_CLIP, 0, 0,
-	 STAR_WIDTH_CLIP,  STAR_HEIGHT_CLIP, 0, 0,
+	-star_width, -star_height,
+	 star_width, -star_height,
+	 star_width,  star_height,
 
-	-STAR_WIDTH_CLIP, -STAR_HEIGHT_CLIP, 0, 0,
-	 STAR_WIDTH_CLIP,  STAR_HEIGHT_CLIP, 0, 0,
-	-STAR_WIDTH_CLIP,  STAR_HEIGHT_CLIP, 0, 0,
+	-star_width, -star_height,
+	 star_width,  star_height,
+	-star_width,  star_height,
 ]);
 
 const vertexBuffer = device.createBuffer({
-	label: "Dummy vertex buffer",
-	size: 4*4*3*2*2,
+	label: "Star vertices",
+	// size: vertices.byteLength,
+	size: vertices.byteLength,
 	usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
 });
-device.queue.writeBuffer(vertexBuffer, 0, new Float32Array(4*4*3*2*2));
-
-const notVertexBuffer = device.createBuffer({
-	label: "Not star vertices",
-	// size: vertices.byteLength,
-	size: vertices.byteLength * 2,  // ?
-	usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
-});
-device.queue.writeBuffer(notVertexBuffer, 0, vertices);
+device.queue.writeBuffer(vertexBuffer, 0, vertices);
 
 
 function randomPosition() {
-	return Math.random() * 2 - 1;
+	return Math.random() * 2 - 1;  // clip space
 }
 
 // Generate a value with a magnitude between [0.001953125, 0.0625],
@@ -49,7 +48,7 @@ function randomVelocity() {
 }
 
 // The x and y position and velocity of each star
-const starStateArray = new Float32Array(STAR_COUNT * 4);
+const starStateArray = new Float32Array(uniforms.star_count * 4);
 const starStateStorage = [
 	device.createBuffer({
 		label: "Star positions A",
@@ -66,7 +65,7 @@ const starStateStorage = [
 for (let i = 0; i < starStateArray.length; i += 4) {
 	starStateArray[i  ] = randomPosition();
 	starStateArray[i+1] = randomPosition();
-	starStateArray[i+2] = randomVelocity();
+	starStateArray[i+2] = randomVelocity() / aspect_ratio();
 	starStateArray[i+3] = randomVelocity();
 }
 device.queue.writeBuffer(starStateStorage[0], 0, starStateArray);
@@ -75,8 +74,16 @@ const bindGroupLayout = device.createBindGroupLayout({
 	label: "Star bind group layout",
 	entries: [
 		{
-			// Star state input buffer
+			// Uniforms
 			binding: 0,
+			visibility: GPUShaderStage.VERTEX |
+			            GPUShaderStage.FRAGMENT |
+			            GPUShaderStage.COMPUTE,
+			buffer: {}
+		},
+		{
+			// Star state input buffer
+			binding: 1,
 			visibility: GPUShaderStage.VERTEX |
 			            GPUShaderStage.FRAGMENT |
 			            GPUShaderStage.COMPUTE,
@@ -84,17 +91,9 @@ const bindGroupLayout = device.createBindGroupLayout({
 		},
 		{
 			// Star state output buffer
-			binding: 1,
+			binding: 2,
 			visibility: GPUShaderStage.COMPUTE,
 			buffer: { type: "storage" }
-		},
-		{
-			// Not star state input buffer
-			binding: 2,
-			visibility: GPUShaderStage.VERTEX |
-			            GPUShaderStage.FRAGMENT |
-			            GPUShaderStage.COMPUTE,
-			buffer: { type: "read-only-storage" }
 		},
 	]
 });
@@ -106,15 +105,15 @@ const bindGroups = [
 		entries: [
 			{
 				binding: 0,
-				resource: { buffer: starStateStorage[0] },
+				resource: { buffer: uniformBuffer },
 			},
 			{
 				binding: 1,
-				resource: { buffer: starStateStorage[1] },
+				resource: { buffer: starStateStorage[0] },
 			},
 			{
 				binding: 2,
-				resource: { buffer: notVertexBuffer },
+				resource: { buffer: starStateStorage[1] },
 			},
 		],
 	}),
@@ -124,15 +123,15 @@ const bindGroups = [
 		entries: [
 			{
 				binding: 0,
-				resource: { buffer: starStateStorage[1] },
+				resource: { buffer: uniformBuffer },
 			},
 			{
 				binding: 1,
-				resource: { buffer: starStateStorage[0] },
+				resource: { buffer: starStateStorage[1] },
 			},
 			{
 				binding: 2,
-				resource: { buffer: notVertexBuffer },
+				resource: { buffer: starStateStorage[0] },
 			},
 		],
 	}),
@@ -156,10 +155,10 @@ const starPipeline = device.createRenderPipeline({
 		module: starShaderModule,
 		entryPoint: "vertex_main",
 		buffers: [{
-			arrayStride: 16,
+			arrayStride: 8,
 			attributes: [
 				{
-					format: "float32x4",
+					format: "float32x2",
 					offset: 0,
 					shaderLocation: 0,
 				},
@@ -171,7 +170,7 @@ const starPipeline = device.createRenderPipeline({
 		entryPoint: "fragment_main",
 		targets: [{
 			format: canvasFormat,
-			blend: {  // WebGPU defaults to no alpha??? Why???
+			blend: {  // WebGPU ignores alpha by default??? Why???
 				color: {
 					srcFactor: "src-alpha",
 					dstFactor: "one",
@@ -210,7 +209,7 @@ function tick() {
 		pass.setPipeline(simulationPipeline);
 		pass.setBindGroup(0, bindGroups[tick.count % 2]);
 	
-		const workgroupCount = Math.ceil(STAR_COUNT / WORKGROUP_SIZE);
+		const workgroupCount = Math.ceil(uniforms.star_count / WORKGROUP_SIZE);
 		pass.dispatchWorkgroups(workgroupCount);
 	
 		pass.end();
@@ -233,7 +232,7 @@ function tick() {
 		pass.setPipeline(starPipeline);
 		pass.setBindGroup(0, bindGroups[tick.count % 2]);
 		pass.setVertexBuffer(0, vertexBuffer);
-		pass.draw(vertices.length / 2, STAR_COUNT);
+		pass.draw(vertices.length / 2, uniforms.star_count);
 	
 		pass.end();
 	}
