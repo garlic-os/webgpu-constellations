@@ -18,15 +18,15 @@ export default /* wgsl */`
 	@group(0) @binding(1) var<storage> states: array<vec4f>;
 
 
-	fn clip_space(pos: vec2f) -> vec2f {
-		return vec2f(
-			  (2 * pos.x / u.res.x ) - 1,
-			-((2 * pos.y / u.res.y) - 1)
-		);
-	}
-
 	fn aspect_ratio() -> f32 {
 		return f32(u.res.x) / f32(u.res.y);
+	}
+
+	fn clip_space(pos: vec2f) -> vec2f {
+		return vec2f(
+			( 2 * pos.x / u.res.x) - 1,
+			(-2 * pos.y / u.res.y) + 1
+		);
 	}
 
 
